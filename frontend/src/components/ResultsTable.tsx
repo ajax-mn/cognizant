@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { QueryResponse } from "../api";
 
 function exportCSV(result: QueryResponse) {
@@ -27,6 +28,15 @@ function formatCell(value: unknown): string {
 }
 
 export function ResultsTable({ result }: { result: QueryResponse }) {
+  const [copied, setCopied] = useState(false);
+
+  function copySQL() {
+    navigator.clipboard.writeText(result.sql).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -45,9 +55,32 @@ export function ResultsTable({ result }: { result: QueryResponse }) {
             {result.source === "template" ? "Rule-based match" : "Claude"}
           </span>
         </div>
-        <pre className="overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 font-mono text-[13px] leading-relaxed text-neutral-800">
-          {result.sql}
-        </pre>
+        <div className="relative">
+          <button
+            onClick={copySQL}
+            title={copied ? "Copied!" : "Copy SQL"}
+            className={
+              "absolute right-2 top-2 rounded-md border p-1.5 transition-colors " +
+              (copied
+                ? "border-emerald-300 bg-emerald-50 text-emerald-600"
+                : "border-neutral-300 bg-white text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700")
+            }
+          >
+            {copied ? (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+              </svg>
+            )}
+          </button>
+          <pre className="overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3 pr-12 font-mono text-[13px] leading-relaxed text-neutral-800">
+            {result.sql}
+          </pre>
+        </div>
       </div>
 
       <div className="flex items-center justify-between">
