@@ -35,6 +35,7 @@ from database import get_db_session, get_engine
 from db_connections import InvalidDatabaseFileError
 from db_models import Base, CacheAuditLog, DynamicQueryCache, QueryCache
 from models import ExecuteSQLRequest, QueryRequest, QueryResponse, UploadDatabaseResponse
+from question_validator import validate_question
 from schema_introspection import format_schema_for_context, get_database_schema
 from sql_generator import generate_sql_from_question
 from sql_templates import try_template_match
@@ -241,6 +242,12 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
         except Exception as e:
             raise HTTPException(status_code=500, detail="Failed to read the database schema.")
 
+        # Validate the question before hitting templates or the LLM.
+        try:
+            validate_question(request.question, tables)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         sql = try_template_match(request.question, tables)
         source = "template"
 
@@ -330,7 +337,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     try:
         columns, rows = _run_select(sql, engine)
     except Exception as e:
-        raise HTTPException(status_code=400, detail="Query failed to run. Try rephrasing your question.")
+        raise HTTPException(status_code=400, detail="Query failed to run")
 
     execution_time_ms = int((time.perf_counter() - start_time) * 1000)
 
