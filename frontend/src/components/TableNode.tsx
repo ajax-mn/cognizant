@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import type { TableNodeData } from "../utils/schemaFlowMapper";
+import { type TableNodeData, NODE_WIDTH } from "../utils/schemaFlowMapper";
 
 export type TableNodeType = Node<TableNodeData, "tableNode">;
 
@@ -12,7 +12,8 @@ function TableNodeComponent({ data, selected }: NodeProps<TableNodeType>) {
 
   return (
     <div
-      className={`min-w-[240px] max-w-[320px] rounded-xl border bg-white shadow-sm transition-all select-none ${
+      style={{ width: `${NODE_WIDTH}px` }}
+      className={`rounded-xl border bg-white shadow-sm transition-all select-none ${
         selected
           ? "border-blue-500 ring-2 ring-blue-500/20 shadow-md"
           : "border-slate-200 hover:border-slate-300 hover:shadow-md"
@@ -67,9 +68,9 @@ function TableNodeComponent({ data, selected }: NodeProps<TableNodeType>) {
           return (
             <div
               key={col.name}
-              className="relative flex items-center justify-between gap-3 px-3.5 py-1.5 hover:bg-slate-50/70 text-xs transition-colors"
+              className="relative flex items-center justify-between gap-3 px-3.5 py-1.5 hover:bg-slate-50/70 text-xs transition-colors h-[32px]"
             >
-              {/* Target Handle on the left side of the column */}
+              {/* Target Handle STRICTLY on Position.Left */}
               <Handle
                 type="target"
                 position={Position.Left}
@@ -115,7 +116,7 @@ function TableNodeComponent({ data, selected }: NodeProps<TableNodeType>) {
                 </span>
               </div>
 
-              {/* Source Handle on the right side of the column */}
+              {/* Source Handle STRICTLY on Position.Right */}
               <Handle
                 type="source"
                 position={Position.Right}

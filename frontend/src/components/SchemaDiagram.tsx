@@ -1,18 +1,24 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   BackgroundVariant,
   type Node,
   type Edge,
   type NodeTypes,
 } from "@xyflow/react";
 import { TableNode } from "./TableNode";
-import { mapSchemaToFlow, type TableNodeData } from "../utils/schemaFlowMapper";
+import {
+  mapSchemaToFlow,
+  getLayoutedElements,
+  type TableNodeData,
+} from "../utils/schemaFlowMapper";
 import type { SchemaResponse } from "../api";
 
 interface Props {
@@ -25,8 +31,13 @@ const nodeTypes: NodeTypes = {
   tableNode: TableNode,
 };
 
-export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap = true }: Props) {
+function SchemaDiagramContent({
+  schema,
+  className = "h-full w-full",
+  showMiniMap = true,
+}: Props) {
   const [searchTerm, setSearchTerm] = useState("");
+  const { fitView } = useReactFlow();
 
   const initialFlow = useMemo(() => {
     return mapSchemaToFlow(schema);
@@ -35,11 +46,16 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<TableNodeData>>(initialFlow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialFlow.edges);
 
+  // Re-run Dagre auto-layout whenever the underlying database schema changes
   useEffect(() => {
     const flow = mapSchemaToFlow(schema);
     setNodes(flow.nodes);
     setEdges(flow.edges);
-  }, [schema, setNodes, setEdges]);
+    // Smoothly center the diagram after layout
+    setTimeout(() => {
+      fitView({ duration: 400, padding: 0.2 });
+    }, 50);
+  }, [schema, setNodes, setEdges, fitView]);
 
   // Filter nodes if search term entered
   const filteredNodes = useMemo(() => {
@@ -56,11 +72,15 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
     });
   }, [nodes, searchTerm]);
 
-  const resetLayout = useCallback(() => {
-    const flow = mapSchemaToFlow(schema);
-    setNodes(flow.nodes);
-    setEdges(flow.edges);
-  }, [schema, setNodes, setEdges]);
+  // "Clean up Layout" button handler
+  const handleCleanUpLayout = useCallback(() => {
+    const layouted = getLayoutedElements(nodes, edges, "LR");
+    setNodes([...layouted.nodes]);
+    setEdges([...layouted.edges]);
+    setTimeout(() => {
+      fitView({ duration: 400, padding: 0.2 });
+    }, 50);
+  }, [nodes, edges, setNodes, setEdges, fitView]);
 
   const tableCount = Object.keys(schema?.tables || {}).length;
   const relCount = schema?.relationships?.length || 0;
@@ -90,7 +110,7 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
   return (
     <div className={`relative flex flex-col bg-slate-50/50 ${className}`}>
       {/* Top Toolbar */}
-      <div className="z-10 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-3.5 py-2 backdrop-blur-sm">
+      <div className="z-10 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-4 py-2.5 backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <span className="flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-600">
             <span>{tableCount}</span> {tableCount === 1 ? "table" : "tables"}
@@ -100,9 +120,13 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
               <span>{relCount}</span> {relCount === 1 ? "relation" : "relations"}
             </span>
           )}
+          <span className="text-[11px] text-slate-400 font-medium ml-1">
+            Hierarchical Left-to-Right layout
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Search Filter */}
           <div className="relative">
             <input
               type="text"
@@ -113,6 +137,7 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
             />
             {searchTerm && (
               <button
+                type="button"
                 onClick={() => setSearchTerm("")}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
               >
@@ -120,13 +145,16 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
               </button>
             )}
           </div>
+
+          {/* Clean up Layout (Dagre) Button */}
           <button
-            onClick={resetLayout}
-            title="Reset node positions"
-            className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+            type="button"
+            onClick={handleCleanUpLayout}
+            title="Clean up and re-align nodes using Dagre LR auto-layout"
+            className="flex h-7 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
           >
             <svg
-              className="h-3 w-3"
+              className="h-3 w-3 text-blue-600"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -137,7 +165,7 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
               <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
               <path d="M3 21v-5h5" />
             </svg>
-            Auto Layout
+            Clean up Layout
           </button>
         </div>
       </div>
@@ -175,5 +203,13 @@ export function SchemaDiagram({ schema, className = "h-full w-full", showMiniMap
         </ReactFlow>
       </div>
     </div>
+  );
+}
+
+export function SchemaDiagram(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <SchemaDiagramContent {...props} />
+    </ReactFlowProvider>
   );
 }

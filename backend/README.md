@@ -1,8 +1,10 @@
 # Text-to-SQL Analytics — Backend
 
 FastAPI service that converts natural language questions into safe, read-only
-PostgreSQL `SELECT` queries using Claude Haiku, executes them, and returns the
-results.
+PostgreSQL `SELECT` queries using Gemini / Claude Haiku with automatic local
+Ollama fallback (`qwen2.5-coder:7b`) when offline, rate limited, or unconfigured,
+executes them, and returns the results.
+
 
 ## Setup
 
