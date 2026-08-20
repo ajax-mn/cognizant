@@ -54,7 +54,6 @@ FastAPI service that converts natural language questions into safe SQL queries u
      REDIS_PORT=6379
      REDIS_PASSWORD=your_password
      ```
-
 - `GET /health` — liveness check
 - `GET /schema` — introspects and returns the database schema
 - `POST /query` — `{ "question": "..." }` → generates SQL via Gemini, validates
