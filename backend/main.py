@@ -17,12 +17,15 @@ if os.getenv("BYPASS_DNS_TIMEOUTS", "false").lower() == "true":
             return _orig_getaddrinfo("18.226.241.3", port, family, type, proto, flags)
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    socket.getaddrinfo = custom_getaddrinfo
-
+import asyncio
+import json
+import queue
+import threading
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -70,7 +73,9 @@ ENABLE_QUERY_CACHE = os.getenv("ENABLE_QUERY_CACHE", "true").lower() == "true"
 CACHE_INVALIDATION_ON_SCHEMA_CHANGE = (
     os.getenv("CACHE_INVALIDATION_ON_SCHEMA_CHANGE", "true").lower() == "true"
 )
-HAIKU_PRICE_PER_TOKEN = float(os.getenv("HAIKU_PRICE_PER_TOKEN", "0.0000015"))
+GEMINI_PRICE_PER_TOKEN = float(
+    os.getenv("GEMINI_PRICE_PER_TOKEN", os.getenv("HAIKU_PRICE_PER_TOKEN", "0.000000375"))
+)
 
 allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://main.d3dz7qujv68w6q.amplifyapp.com")
 allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_str.split(",") if origin.strip()]
@@ -180,187 +185,224 @@ def remove_uploaded_database(connection_id: str):
     return {"status": "removed"}
 
 
-@app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest, db: Session = Depends(get_db_session)):
+@app.post("/query")
+async def query(request: QueryRequest):
     """
-    The main text-to-SQL endpoint. It takes a natural language question and returns
-    both the generated SQL and the resulting data.
-    
-    Workflow:
-    1. Check Cache: Looks for an existing, valid generated query for this exact question.
-    2. Fallback to Templates: If no cache exists, checks if the question matches a known, simple regex pattern (fast-path).
-    3. Generate via LLM: If templates fail, calls Gemini/Claude to generate the SQL.
-    4. Validation & Execution: Ensures the query is safe, runs it against the selected database, and records metrics (cost, time).
+    The main text-to-SQL endpoint. It streams status events and returns the query response.
+    If Gemini fails and switches to the local model, a real-time status event is pushed immediately.
     """
-    engine = _resolve_engine(request.connection_id)
-    start_time = time.perf_counter()
+    async def event_generator():
+        status_queue = queue.Queue()
 
-    from_cache = False
-    cache_status = "n/a"
-    schema_hash = None
-    tokens_used = 0
-    api_cost = 0.0
-    api_cost_saved = 0.0
-    source = "template"
-    sql = None
-    cached_entry = None
-    schema_changed_invalidation = False
-    question_hash = cache_validator.compute_question_hash(request.question, request.connection_id)
-
-    # 1. Try the Redis cache first (only ever populated by LLM-generated queries).
-    if ENABLE_QUERY_CACHE:
-        cached_entry = cache_validator.check_redis_cache(
-            request.question, request.connection_id, engine
-        )
-        if cached_entry is not None:
-            sql = cached_entry["sql"]
-            source = "llm"
-            from_cache = True
-            cache_status = "hit"
-            schema_hash = cached_entry.get("schema_hash")
-            api_cost_saved = cached_entry.get("cost", 0.0)
-        else:
-            cache_status = "miss"
-
-    # 2. No valid cache entry: try the deterministic template match, then the LLM.
-    if sql is None:
-        try:
-            schema_data = get_database_schema(engine)
-            tables = schema_data.get("tables", {})
-            schema_context = format_schema_for_context(schema_data)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to read the database schema: {str(e)}")
-
-        # Validate the question before hitting templates or the LLM.
-        try:
-            validate_question(request.question, tables)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        sql = try_template_match(request.question, tables)
-        source = "template"
-
-        if sql is None:
+        def sync_worker():
             try:
-                sql, tokens_used = generate_sql_from_question(request.question, schema_context)
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-            source = "llm"
+                def on_fallback_cb(msg: str):
+                    status_queue.put({"type": "status", "message": msg})
 
-            try:
-                schema_hash = schema_hasher.get_schema_hash_for_query(sql, engine)
-            except Exception:
+                engine = _resolve_engine(request.connection_id)
+                start_time = time.perf_counter()
+
+                from_cache = False
+                cache_status = "n/a"
                 schema_hash = None
+                tokens_used = 0
+                api_cost = 0.0
+                api_cost_saved = 0.0
+                source = "template"
+                sql = None
+                cached_entry = None
+                fallback_notice = None
+                model_used = None
+                question_hash = cache_validator.compute_question_hash(request.question, request.connection_id)
 
-            api_cost = round(tokens_used * HAIKU_PRICE_PER_TOKEN, 6)
+                # 1. Try the Redis cache first (only ever populated by LLM-generated queries).
+                if ENABLE_QUERY_CACHE:
+                    cached_entry = cache_validator.check_redis_cache(
+                        request.question, request.connection_id, engine
+                    )
+                    if cached_entry is not None:
+                        sql = cached_entry["sql"]
+                        source = "llm"
+                        from_cache = True
+                        cache_status = "hit"
+                        schema_hash = cached_entry.get("schema_hash")
+                        api_cost_saved = cached_entry.get("cost", 0.0)
+                    else:
+                        cache_status = "miss"
 
-            if ENABLE_QUERY_CACHE and schema_hash is not None:
-                cache_validator.update_redis_cache(
+                # 2. No valid cache entry: try the deterministic template match, then the LLM.
+                if sql is None:
+                    try:
+                        schema_data = get_database_schema(engine)
+                        tables = schema_data.get("tables", {})
+                        schema_context = format_schema_for_context(schema_data)
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to read the database schema: {str(e)}")
+
+                    # Validate the question before hitting templates or the LLM.
+                    try:
+                        validate_question(request.question, tables)
+                    except ValueError as e:
+                        raise ValueError(str(e))
+
+                    sql = try_template_match(request.question, tables)
+                    source = "template"
+
+                    if sql is None:
+                        try:
+                            sql, tokens_used, fallback_notice, model_used = generate_sql_from_question(
+                                request.question, schema_context, on_fallback=on_fallback_cb
+                            )
+                        except Exception as e:
+                            raise RuntimeError(str(e))
+                        source = "llm"
+
+                        try:
+                            schema_hash = schema_hasher.get_schema_hash_for_query(sql, engine)
+                        except Exception:
+                            schema_hash = None
+
+                        api_cost = round(tokens_used * GEMINI_PRICE_PER_TOKEN, 6)
+
+                        if ENABLE_QUERY_CACHE and schema_hash is not None:
+                            cache_validator.update_redis_cache(
+                                question=request.question,
+                                connection_id=request.connection_id,
+                                sql=sql,
+                                engine=engine,
+                                tokens_used=tokens_used,
+                                api_cost=api_cost,
+                            )
+
+                # If the generated query is a write / DDL statement, either execute it
+                # (when allow_write is on) or return a preview.
+                if is_write_query(sql):
+                    if not request.allow_write:
+                        resp = QueryResponse(
+                            question=request.question,
+                            sql=sql,
+                            columns=[],
+                            rows=[],
+                            row_count=0,
+                            source=source,
+                            is_preview=True,
+                            from_cache=False,
+                            is_cached=False,
+                            cache_status="n/a",
+                            execution_time_ms=0,
+                            generation_time_ms=0,
+                            api_tokens_used=tokens_used,
+                            api_cost=api_cost,
+                            api_cost_saved=0.0,
+                            cost_saved=0.0,
+                            fallback_notice=fallback_notice,
+                            model_used=model_used,
+                        )
+                        status_queue.put({"type": "result", "data": resp.model_dump()})
+                        return
+
+                    # Write mode is ON — execute the statement.
+                    try:
+                        affected = _run_write(sql, engine)
+                    except Exception as e:
+                        raise RuntimeError(f"Write query failed to execute: {str(e)}")
+
+                    execution_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+                    resp = QueryResponse(
+                        question=request.question,
+                        sql=sql,
+                        columns=["affected_rows"],
+                        rows=[{"affected_rows": affected}],
+                        row_count=1,
+                        source=source,
+                        is_preview=False,
+                        from_cache=False,
+                        is_cached=False,
+                        cache_status="n/a",
+                        execution_time_ms=execution_time_ms,
+                        generation_time_ms=execution_time_ms,
+                        api_tokens_used=tokens_used,
+                        api_cost=api_cost,
+                        api_cost_saved=0.0,
+                        cost_saved=0.0,
+                        fallback_notice=fallback_notice,
+                        model_used=model_used,
+                    )
+                    status_queue.put({"type": "result", "data": resp.model_dump()})
+                    return
+
+                try:
+                    validate_sql(sql)
+                except ValueError as e:
+                    raise ValueError(str(e))
+
+                try:
+                    columns, rows = _run_select(sql, engine)
+                except Exception as e:
+                    raise RuntimeError(f"Query failed to run: {str(e)}")
+
+                execution_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+                if from_cache and cached_entry is not None:
+                    cache_validator.record_cache_hit(
+                        question=request.question,
+                        cached_data=cached_entry,
+                        execution_time_ms=execution_time_ms,
+                        connection_id=request.connection_id,
+                    )
+                elif source == "llm":
+                    cache_validator.record_cache_miss(
+                        question=request.question,
+                        execution_time_ms=execution_time_ms,
+                        tokens_used=tokens_used,
+                        schema_hash=schema_hash,
+                        cache_status=cache_status,
+                        connection_id=request.connection_id,
+                    )
+
+                resp = QueryResponse(
                     question=request.question,
-                    connection_id=request.connection_id,
                     sql=sql,
-                    engine=engine,
-                    tokens_used=tokens_used,
+                    columns=columns,
+                    rows=rows,
+                    row_count=len(rows),
+                    source=source,
+                    from_cache=from_cache,
+                    is_cached=from_cache,
+                    cache_status=cache_status,
+                    schema_hash=schema_hash,
+                    execution_time_ms=execution_time_ms,
+                    generation_time_ms=execution_time_ms,
+                    api_tokens_used=tokens_used,
                     api_cost=api_cost,
+                    api_cost_saved=api_cost_saved,
+                    cost_saved=api_cost_saved,
+                    fallback_notice=fallback_notice,
+                    model_used=model_used,
                 )
+                status_queue.put({"type": "result", "data": resp.model_dump()})
+            except ValueError as ve:
+                status_queue.put({"type": "error", "detail": str(ve)})
+            except Exception as e:
+                status_queue.put({"type": "error", "detail": str(e)})
 
-    # If the generated query is a write / DDL statement, either execute it
-    # (when allow_write is on) or return a preview.
-    if is_write_query(sql):
-        if not request.allow_write:
-            return QueryResponse(
-                question=request.question,
-                sql=sql,
-                columns=[],
-                rows=[],
-                row_count=0,
-                source=source,
-                is_preview=True,
-                from_cache=False,
-                is_cached=False,
-                cache_status="n/a",
-                execution_time_ms=0,
-                generation_time_ms=0,
-                api_tokens_used=tokens_used,
-                api_cost=api_cost,
-                api_cost_saved=0.0,
-                cost_saved=0.0,
-            )
+        worker_thread = threading.Thread(target=sync_worker)
+        worker_thread.start()
 
-        # Write mode is ON — execute the statement.
-        try:
-            affected = _run_write(sql, engine)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Write query failed to execute: {str(e)}")
+        while True:
+            await asyncio.sleep(0.01)
+            while not status_queue.empty():
+                item = status_queue.get_nowait()
+                yield (json.dumps(item) + "\n").encode("utf-8")
+                if item.get("type") in ("result", "error"):
+                    worker_thread.join()
+                    return
+            if not worker_thread.is_alive() and status_queue.empty():
+                break
 
-        execution_time_ms = int((time.perf_counter() - start_time) * 1000)
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
-        return QueryResponse(
-            question=request.question,
-            sql=sql,
-            columns=["affected_rows"],
-            rows=[{"affected_rows": affected}],
-            row_count=1,
-            source=source,
-            is_preview=False,
-            from_cache=False,
-            is_cached=False,
-            cache_status="n/a",
-            execution_time_ms=execution_time_ms,
-            generation_time_ms=execution_time_ms,
-            api_tokens_used=tokens_used,
-            api_cost=api_cost,
-            api_cost_saved=0.0,
-            cost_saved=0.0,
-        )
-
-    try:
-        validate_sql(sql)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    try:
-        columns, rows = _run_select(sql, engine)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Query failed to run: {str(e)}")
-
-    execution_time_ms = int((time.perf_counter() - start_time) * 1000)
-
-    if from_cache and cached_entry is not None:
-        cache_validator.record_cache_hit(
-            question=request.question,
-            cached_data=cached_entry,
-            execution_time_ms=execution_time_ms,
-            connection_id=request.connection_id,
-        )
-    elif source == "llm":
-        cache_validator.record_cache_miss(
-            question=request.question,
-            execution_time_ms=execution_time_ms,
-            tokens_used=tokens_used,
-            schema_hash=schema_hash,
-            cache_status=cache_status,
-            connection_id=request.connection_id,
-        )
-
-    return QueryResponse(
-        question=request.question,
-        sql=sql,
-        columns=columns,
-        rows=rows,
-        row_count=len(rows),
-        source=source,
-        from_cache=from_cache,
-        is_cached=from_cache,
-        cache_status=cache_status,
-        schema_hash=schema_hash,
-        execution_time_ms=execution_time_ms,
-        generation_time_ms=execution_time_ms,
-        api_tokens_used=tokens_used,
-        api_cost=api_cost,
-        api_cost_saved=api_cost_saved,
-        cost_saved=api_cost_saved,
-    )
 
 
 @app.post("/execute-sql")

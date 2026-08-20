@@ -191,27 +191,49 @@ SQL Query:"""
         raise RuntimeError(f"Failed to generate SQL using Ollama ({ollama_model}): {e}")
 
 
-def generate_sql_from_question(question: str, schema_context: str) -> tuple[str, int]:
-    """Generate SQL for `question`. Returns (sql, tokens_used).
-    Primary generator: Google Gemini API (gemini-2.5-flash).
-    Fallback generator: Local Ollama if Gemini is unconfigured or fails.
+def generate_sql_from_question(
+    question: str,
+    schema_context: str,
+    on_fallback: callable = None,
+) -> tuple[str, int, str | None, str]:
+    """Generate SQL for `question`. Returns (sql, tokens_used, fallback_notice, model_used).
+    Primary generator: Google Gemini API.
+    Fallback generator: Local Ollama if Gemini is unconfigured or encounters an exception.
     """
     gemini_key = os.getenv("GEMINI_API_KEY")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
     attempt_errors: list[str] = []
+    fallback_notice: str | None = None
 
     # 1. Try Gemini if configured
     if gemini_key and gemini_key.strip() and not gemini_key.startswith("your_gemini_api_key") and not gemini_key.startswith("your_api_key"):
         try:
-            return _generate_sql_using_gemini(question, schema_context, gemini_key.strip())
+            sql, tokens = _generate_sql_using_gemini(question, schema_context, gemini_key.strip())
+            return sql, tokens, None, gemini_model
         except Exception as e:
-            msg = f"Gemini error: {e}"
-            logger.warning(f"{msg}. Falling back to local Ollama...")
-            attempt_errors.append(msg)
+            gemini_error_msg = str(e)
+            logger.warning(f"Gemini API exception: {gemini_error_msg}. Falling back to local Ollama...")
+            attempt_errors.append(f"Gemini error: {gemini_error_msg}")
+            fallback_notice = f"Gemini API error ({gemini_error_msg}). Switched to local AI model ({ollama_model})."
+            if on_fallback:
+                try:
+                    on_fallback("Switching to the Local Model!")
+                except Exception:
+                    pass
 
     # 2. Fallback to Local Ollama
     try:
         print("ParleG Sindabad")
-        return _generate_sql_using_ollama(question, schema_context)
+        if not fallback_notice:
+            fallback_notice = f"Gemini API is unconfigured. Processed using local AI model ({ollama_model})."
+            if on_fallback:
+                try:
+                    on_fallback("Switching to the Local Model!")
+                except Exception:
+                    pass
+        sql, tokens = _generate_sql_using_ollama(question, schema_context)
+        return sql, tokens, fallback_notice, ollama_model
     except Exception as ollama_err:
         attempt_errors.append(f"Ollama error: {ollama_err}")
         if len(attempt_errors) == 1 and not gemini_key:
@@ -221,3 +243,5 @@ def generate_sql_from_question(question: str, schema_context: str) -> tuple[str,
         raise RuntimeError(
             f"SQL generation failed. Attempts: {'; '.join(attempt_errors)}"
         )
+
+

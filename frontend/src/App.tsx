@@ -25,6 +25,7 @@ function App() {
   const [lastQuestion, setLastQuestion] = useState<string | null>(null);
   const [mainView, setMainView] = useState<MainViewType>("query");
   const [writeMode, setWriteMode] = useState(false);
+  const [fallbackStatus, setFallbackStatus] = useState<string | null>(null);
 
   // null = using the default configured DATABASE_URL database.
   const [activeConnection, setActiveConnection] = useState<ActiveConnection | null>(null);
@@ -48,8 +49,14 @@ function App() {
     setQueryLoading(true);
     setQueryError(null);
     setLastQuestion(question);
+    setFallbackStatus(null);
     try {
-      const response = await runQuery(question, activeConnection?.connectionId ?? null, writeMode);
+      const response = await runQuery(
+        question,
+        activeConnection?.connectionId ?? null,
+        writeMode,
+        (status) => setFallbackStatus(status)
+      );
       setResult(response);
     } catch (err) {
       setResult(null);
@@ -180,7 +187,7 @@ function App() {
           {mainView === "query" && (
             <div className="h-full overflow-y-auto">
               <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
-                <QueryForm onSubmit={handleSubmit} loading={queryLoading} />
+                <QueryForm onSubmit={handleSubmit} loading={queryLoading} fallbackStatus={fallbackStatus} />
 
                 {queryError && (
                   <div className="rounded-md border border-neutral-200 bg-white px-4 py-3 text-sm text-neutral-700">

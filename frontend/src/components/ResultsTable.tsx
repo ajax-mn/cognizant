@@ -109,6 +109,11 @@ export function ResultsTable({ result }: { result: QueryResponse }) {
           <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
             Generated SQL
           </p>
+          {result.source === "template" && (
+            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+              Rule-based match
+            </span>
+          )}
           <CacheBadge result={result} />
           {result.is_preview && (
             <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">

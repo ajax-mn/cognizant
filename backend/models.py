@@ -33,6 +33,8 @@ class QueryResponse(BaseModel):
     is_cached: bool = False
     generation_time_ms: int = 0
     cost_saved: float = 0.0
+    fallback_notice: str | None = None
+    model_used: str | None = None
 
 
 class ExecuteSQLRequest(BaseModel):

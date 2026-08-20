@@ -15,6 +15,8 @@ export interface QueryResponse {
   api_cost: number;
   api_cost_saved: number;
   is_preview: boolean; // true = write/DDL query generated but NOT executed
+  fallback_notice?: string | null;
+  model_used?: string | null;
 }
 
 export interface UploadDatabaseResponse {
@@ -85,7 +87,8 @@ export async function fetchSchema(connectionId?: string | null): Promise<SchemaR
 export async function runQuery(
   question: string,
   connectionId?: string | null,
-  allowWrite: boolean = false
+  allowWrite: boolean = false,
+  onStatus?: (status: string) => void
 ): Promise<QueryResponse> {
   const res = await fetch(`${BASE_URL}/query`, {
     method: "POST",
@@ -96,7 +99,74 @@ export async function runQuery(
       allow_write: allowWrite,
     }),
   });
-  return handleResponse<QueryResponse>(res);
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? detail;
+    } catch {
+      // ignore parse error
+    }
+    throw new Error(detail);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    return res.json();
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let queryResult: QueryResponse | null = null;
+  let errorDetail: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const item = JSON.parse(line);
+        if (item.type === "status") {
+          if (onStatus) onStatus(item.message || "Switching to the Local Model!");
+        } else if (item.type === "result") {
+          queryResult = item.data;
+        } else if (item.type === "error") {
+          errorDetail = item.detail || "An error occurred during query generation.";
+        }
+      } catch {
+        // partial line or parse error
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    try {
+      const item = JSON.parse(buffer);
+      if (item.type === "result") {
+        queryResult = item.data;
+      } else if (item.type === "error") {
+        errorDetail = item.detail;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (errorDetail) {
+    throw new Error(errorDetail);
+  }
+
+  if (queryResult) {
+    return queryResult;
+  }
+
+  throw new Error("No response received from server.");
 }
 
 export async function uploadDatabase(file: File): Promise<UploadDatabaseResponse> {

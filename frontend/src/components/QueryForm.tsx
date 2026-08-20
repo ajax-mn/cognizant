@@ -3,6 +3,7 @@ import { useState } from "react";
 interface Props {
   onSubmit: (question: string) => void;
   loading: boolean;
+  fallbackStatus?: string | null;
 }
 
 const EXAMPLE_QUESTIONS = [
@@ -11,7 +12,7 @@ const EXAMPLE_QUESTIONS = [
   "List all orders with customer names and amounts",
 ];
 
-export function QueryForm({ onSubmit, loading }: Props) {
+export function QueryForm({ onSubmit, loading, fallbackStatus }: Props) {
   const [question, setQuestion] = useState("");
 
   function handleSubmit(e: React.FormEvent) {
@@ -24,9 +25,16 @@ export function QueryForm({ onSubmit, loading }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-      <label htmlFor="question" className="text-sm font-medium text-neutral-700">
-        Ask a question about your data
-      </label>
+      <div className="flex items-center justify-between">
+        <label htmlFor="question" className="text-sm font-medium text-neutral-700">
+          Ask a question about your data
+        </label>
+        {fallbackStatus && (
+          <span className="text-xs text-neutral-500">
+            {fallbackStatus}
+          </span>
+        )}
+      </div>
       <div className="flex gap-2">
         <input
           id="question"
@@ -51,7 +59,7 @@ export function QueryForm({ onSubmit, loading }: Props) {
             key={example}
             type="button"
             onClick={() => setQuestion(example)}
-            className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs text-neutral-600"
+            className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-800"
           >
             {example}
           </button>
