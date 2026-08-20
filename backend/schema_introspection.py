@@ -18,7 +18,7 @@ def get_database_schema(engine: Engine) -> dict:
 
 
 def format_schema_for_context(tables: dict) -> str:
-    """Format schema as readable text for Claude context."""
+    """Format schema as readable text for LLM context."""
     schema_text = ""
     for table_name, columns in tables.items():
         schema_text += f"\nTable: {table_name}\n"

@@ -45,7 +45,9 @@ ENABLE_QUERY_CACHE = os.getenv("ENABLE_QUERY_CACHE", "true").lower() == "true"
 CACHE_INVALIDATION_ON_SCHEMA_CHANGE = (
     os.getenv("CACHE_INVALIDATION_ON_SCHEMA_CHANGE", "true").lower() == "true"
 )
-HAIKU_PRICE_PER_TOKEN = float(os.getenv("HAIKU_PRICE_PER_TOKEN", "0.0000015"))
+GEMINI_PRICE_PER_TOKEN = float(
+    os.getenv("GEMINI_PRICE_PER_TOKEN", os.getenv("HAIKU_PRICE_PER_TOKEN", "0.000000375"))
+)
 
 allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://main.d3dz7qujv68w6q.amplifyapp.com")
 allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_str.split(",") if origin.strip()]
@@ -178,7 +180,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
             except Exception:
                 schema_hash = None
 
-            api_cost = round(tokens_used * HAIKU_PRICE_PER_TOKEN, 6)
+            api_cost = round(tokens_used * GEMINI_PRICE_PER_TOKEN, 6)
             cache_status = "regenerated_schema_changed" if schema_changed_invalidation else "miss"
 
             if ENABLE_QUERY_CACHE and schema_hash is not None:
