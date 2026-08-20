@@ -49,7 +49,7 @@ GEMINI_PRICE_PER_TOKEN = float(
     os.getenv("GEMINI_PRICE_PER_TOKEN", os.getenv("HAIKU_PRICE_PER_TOKEN", "0.000000375"))
 )
 
-allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://main.d3dz7qujv68w6q.amplifyapp.com")
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS")
 allowed_origins = [origin.strip().rstrip("/") for origin in allowed_origins_str.split(",") if origin.strip()]
 
 app.add_middleware(
