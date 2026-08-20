@@ -4,10 +4,7 @@ import {
   type CacheAnalyticsResponse,
 } from "../api";
 
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString();
-}
+
 
 function MetricCard({
   label,
@@ -108,12 +105,12 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
           <div>
             <span className="text-xs font-semibold text-neutral-900">
               {isDefaultDb
-                ? "Default Database (PostgreSQL)"
+                ? "Default Database"
                 : `Uploaded Database (${activeConnection?.filename ?? "SQLite"})`}
             </span>
             <p className="text-[11px] text-neutral-500">
               {isDefaultDb
-                ? "Displaying cache hits and queries from query_cache"
+                ? "Displaying cache analytics for the configured database"
                 : `Displaying isolated cache data for connection ID: ${connectionId?.slice(0, 12)}…`}
             </p>
           </div>
@@ -184,7 +181,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Question</th>
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Hits</th>
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Cost Saved</th>
-                <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Last Used</th>
+                <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Cached SQL</th>
               </tr>
             </thead>
             <tbody>
@@ -193,7 +190,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
                   <td className="max-w-xs truncate px-3 py-2 text-neutral-800">{q.question}</td>
                   <td className="px-3 py-2 text-neutral-800">{q.hit_count}</td>
                   <td className="px-3 py-2 text-neutral-800">${q.cost_saved.toFixed(6)}</td>
-                  <td className="px-3 py-2 text-neutral-500">{formatDate(q.last_used_at)}</td>
+                  <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-neutral-500" title={q.sql}>{q.sql}</td>
                 </tr>
               ))}
               {analytics.top_cached_queries.length === 0 && (

@@ -33,7 +33,7 @@ import schema_hasher
 from analytics import router as analytics_router
 from database import get_db_session, get_engine
 from db_connections import InvalidDatabaseFileError
-from db_models import Base, CacheAuditLog, DynamicQueryCache, QueryCache
+from db_models import Base
 from models import ExecuteSQLRequest, QueryRequest, QueryResponse, UploadDatabaseResponse
 from question_validator import validate_question
 from schema_introspection import format_schema_for_context, get_database_schema
@@ -210,7 +210,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     # 1. Try the Redis cache first (only ever populated by LLM-generated queries).
     if ENABLE_QUERY_CACHE:
         cached_entry = cache_validator.check_redis_cache(
-            request.question, request.connection_id, engine, db
+            request.question, request.connection_id, engine
         )
         if cached_entry is not None:
             sql = cached_entry["sql"]
@@ -262,7 +262,6 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
                     engine=engine,
                     tokens_used=tokens_used,
                     api_cost=api_cost,
-                    db_session=db,
                 )
 
     # If the generated query is a write / DDL statement, either execute it
@@ -331,14 +330,12 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
         cache_validator.record_cache_hit(
             question=request.question,
             cached_data=cached_entry,
-            db_session=db,
             execution_time_ms=execution_time_ms,
             connection_id=request.connection_id,
         )
     elif source == "llm":
         cache_validator.record_cache_miss(
             question=request.question,
-            db_session=db,
             execution_time_ms=execution_time_ms,
             tokens_used=tokens_used,
             schema_hash=schema_hash,

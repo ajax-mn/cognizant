@@ -51,9 +51,10 @@ class ErrorResponse(BaseModel):
 
 class TopCachedQuery(BaseModel):
     question: str
+    sql: str = ""
     hit_count: int
     cost_saved: float
-    last_used_at: datetime | None
+
 
 
 class CacheAnalyticsResponse(BaseModel):
@@ -65,14 +66,3 @@ class CacheAnalyticsResponse(BaseModel):
     total_cost_saved: float
     top_cached_queries: list[TopCachedQuery]
 
-
-class CacheInvalidationEvent(BaseModel):
-    question: str
-    reason: str | None
-    old_schema_hash: str | None
-    new_schema_hash: str | None
-    created_at: datetime | None
-
-
-class CacheInvalidationsResponse(BaseModel):
-    invalidations: list[CacheInvalidationEvent]

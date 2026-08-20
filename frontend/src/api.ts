@@ -24,9 +24,9 @@ export interface UploadDatabaseResponse {
 
 export interface TopCachedQuery {
   question: string;
+  sql: string;
   hit_count: number;
   cost_saved: number;
-  last_used_at: string | null;
 }
 
 export interface CacheAnalyticsResponse {

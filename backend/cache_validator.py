@@ -1,4 +1,4 @@
-"""Validates, invalidates, and updates cached SQL queries using Redis for speed and PostgreSQL for Audit Logging.
+"""Validates, invalidates, and updates cached SQL queries using Redis.
 
 A cached query is shared globally across all users for maximum cache hits and cost savings.
 A cached query is considered valid only if the schema hash of the tables it
@@ -10,13 +10,10 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
 
 import redis
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
 
-from db_models import CacheAuditLog, DynamicQueryCache, QueryCache
 import schema_hasher
 
 # Initialize Redis client (configurable via environment variables)
@@ -32,6 +29,12 @@ redis_client = redis.Redis(
 
 # Time-to-Live for cache entries (7 days)
 CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
+
+
+def _stats_key(connection_id: str | None) -> str:
+    """Returns the Redis hash key for cache analytics counters."""
+    safe_conn_id = (connection_id and connection_id.strip()) or "default"
+    return f"cache_stats:{safe_conn_id}"
 
 
 def normalize_question(question: str) -> str:
@@ -66,10 +69,9 @@ def check_redis_cache(
     question: str,
     connection_id: str | None,
     engine: Engine,
-    db_session: Session,
 ) -> dict | None:
     """Checks Redis for a valid cached query in the shared global cache.
-    Automatically invalidates if the schema changed and records the invalidation in the PostgreSQL Audit Log.
+    Automatically invalidates if the schema changed and increments the invalidation counter.
     """
     question_hash = compute_question_hash(question, connection_id)
     cache_key = get_redis_key(connection_id, question_hash)
@@ -106,28 +108,12 @@ def check_redis_cache(
         except Exception as e:
             print(f"[Redis] Error deleting stale key: {e}")
 
-        # Delete database model entries if present
-        if connection_id:
-            db_session.query(DynamicQueryCache).filter_by(question_hash=question_hash).delete()
-        else:
-            db_session.query(QueryCache).filter_by(question_hash=question_hash).delete()
+        # Increment invalidation counter in Redis
+        try:
+            redis_client.hincrby(_stats_key(connection_id), "invalidations", 1)
+        except Exception:
+            pass
 
-        # Log the invalidation to PostgreSQL for audit & analytics
-        db_session.add(
-            CacheAuditLog(
-                question=question,
-                connection_id=connection_id,
-                cache_status="invalidated",
-                reason="schema_changed",
-                old_schema_hash=cached_data.get("schema_hash"),
-                new_schema_hash=current_schema_hash,
-                query_execution_time_ms=0,
-                api_tokens_used=0,
-                api_cost_saved=0.0,
-                user_id="shared_user",
-            )
-        )
-        db_session.commit()
         return None
 
     # Schema is still valid, return the cached payload
@@ -141,7 +127,6 @@ def update_redis_cache(
     engine: Engine,
     tokens_used: int,
     api_cost: float,
-    db_session: Session | None = None,
 ) -> None:
     """Saves the newly generated SQL and the current schema hash to Redis in the global shared cache."""
     question_hash = compute_question_hash(question, connection_id)
@@ -159,6 +144,7 @@ def update_redis_cache(
         "cost": api_cost,
         "question": question,
         "connection_id": connection_id,
+        "hit_count": 0,
     }
 
     try:
@@ -167,128 +153,66 @@ def update_redis_cache(
     except Exception as e:
         print(f"[Redis] Error writing to cache: {e}")
 
-    # Synchronize with PostgreSQL database models for analytics visibility
-    if db_session is not None:
-        now = datetime.now(timezone.utc)
-        if connection_id:
-            entry = (
-                db_session.query(DynamicQueryCache)
-                .filter_by(question_hash=question_hash)
-                .first()
-            )
-            if entry is None:
-                entry = DynamicQueryCache(
-                    connection_id=connection_id,
-                    question=question,
-                    question_hash=question_hash,
-                    generated_sql=sql,
-                    schema_hash_at_cache_time=current_schema_hash,
-                    api_tokens_used=tokens_used,
-                    api_cost=api_cost,
-                    hit_count=0,
-                    cache_status="miss",
-                    last_used_at=now,
-                )
-                db_session.add(entry)
-            else:
-                entry.generated_sql = sql
-                entry.schema_hash_at_cache_time = current_schema_hash
-                entry.api_tokens_used = tokens_used
-                entry.api_cost = api_cost
-                entry.last_used_at = now
-        else:
-            entry = (
-                db_session.query(QueryCache)
-                .filter_by(question_hash=question_hash)
-                .first()
-            )
-            if entry is None:
-                entry = QueryCache(
-                    question=question,
-                    question_hash=question_hash,
-                    generated_sql=sql,
-                    schema_hash_at_cache_time=current_schema_hash,
-                    api_tokens_used=tokens_used,
-                    api_cost=api_cost,
-                    hit_count=0,
-                    cache_status="miss",
-                    last_used_at=now,
-                )
-                db_session.add(entry)
-            else:
-                entry.generated_sql = sql
-                entry.schema_hash_at_cache_time = current_schema_hash
-                entry.api_tokens_used = tokens_used
-                entry.api_cost = api_cost
-                entry.last_used_at = now
-
-        db_session.commit()
-
 
 def record_cache_hit(
     question: str,
     cached_data: dict,
-    db_session: Session,
     execution_time_ms: int,
     connection_id: str | None = None,
 ) -> None:
-    """Records a successful cache hit in the PostgreSQL Audit Log."""
+    """Records a successful cache hit entirely in Redis."""
     question_hash = compute_question_hash(question, connection_id)
-    now = datetime.now(timezone.utc)
+    cache_key = get_redis_key(connection_id, question_hash)
+    stats_key = _stats_key(connection_id)
 
-    # Increment hit count on DB cache model for analytics
-    if connection_id:
-        entry = db_session.query(DynamicQueryCache).filter_by(question_hash=question_hash).first()
-        if entry:
-            entry.hit_count += 1
-            entry.cache_status = "hit"
-            entry.last_used_at = now
-    else:
-        entry = db_session.query(QueryCache).filter_by(question_hash=question_hash).first()
-        if entry:
-            entry.hit_count += 1
-            entry.cache_status = "hit"
-            entry.last_used_at = now
+    # Increment hit count in the cached payload
+    try:
+        cached_str = redis_client.get(cache_key)
+        if cached_str:
+            payload = json.loads(cached_str)
+            payload["hit_count"] = payload.get("hit_count", 0) + 1
+            remaining_ttl = redis_client.ttl(cache_key)
+            if remaining_ttl and remaining_ttl > 0:
+                redis_client.setex(cache_key, remaining_ttl, json.dumps(payload))
+            else:
+                redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(payload))
+    except Exception as e:
+        print(f"[Redis] Error incrementing hit count: {e}")
 
-    db_session.add(
-        CacheAuditLog(
-            question=question,
-            connection_id=connection_id,
-            cache_status="hit",
-            reason=None,
-            old_schema_hash=None,
-            new_schema_hash=cached_data.get("schema_hash"),
-            query_execution_time_ms=execution_time_ms,
-            api_tokens_used=0,
-            api_cost_saved=cached_data.get("cost", 0.0),
-            user_id="shared_user",
-        )
-    )
-    db_session.commit()
+    # Increment global analytics counters
+    try:
+        redis_client.hincrby(stats_key, "hits", 1)
+        cost_saved = cached_data.get("cost", 0.0)
+        redis_client.hincrbyfloat(stats_key, "cost_saved", cost_saved)
+    except Exception as e:
+        print(f"[Redis] Error updating stats: {e}")
 
 
 def record_cache_miss(
     question: str,
-    db_session: Session,
     execution_time_ms: int,
     tokens_used: int,
     schema_hash: str | None,
     cache_status: str = "miss",
     connection_id: str | None = None,
 ) -> None:
-    """Logs a cache miss or regenerated event in CacheAuditLog."""
-    db_session.add(
-        CacheAuditLog(
-            question=question,
-            connection_id=connection_id,
-            cache_status=cache_status,
-            reason="schema_changed" if cache_status == "regenerated_schema_changed" else None,
-            old_schema_hash=None,
-            new_schema_hash=schema_hash,
-            query_execution_time_ms=execution_time_ms,
-            api_tokens_used=tokens_used,
-            api_cost_saved=0.0,
-            user_id="shared_user",
-        )
-    )
-    db_session.commit()
+    """Records a cache miss in Redis analytics counters."""
+    try:
+        redis_client.hincrby(_stats_key(connection_id), "misses", 1)
+    except Exception as e:
+        print(f"[Redis] Error recording miss: {e}")
+
+
+def get_cache_stats(connection_id: str | None = None) -> dict:
+    """Returns the analytics counters (hits, misses, invalidations, cost_saved) from Redis."""
+    try:
+        stats = redis_client.hgetall(_stats_key(connection_id))
+    except Exception:
+        stats = {}
+
+    return {
+        "hits": int(stats.get("hits", 0)),
+        "misses": int(stats.get("misses", 0)),
+        "invalidations": int(stats.get("invalidations", 0)),
+        "cost_saved": float(stats.get("cost_saved", 0.0)),
+    }
