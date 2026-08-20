@@ -7,7 +7,7 @@ graph TD
     User([User's Browser]) -->|HTTPS| Frontend[AWS Amplify Hosting]
     User -->|API Requests| Backend[AWS App Runner / ECS Fargate]
     Backend -->|SQL Queries| DB[(AWS RDS PostgreSQL)]
-    Backend -->|HTTP POST| LLM[LLM API Gemini/Claude]
+    Backend -->|HTTP POST| LLM[Google Gemini API]
 ```
 
 ---
@@ -49,7 +49,8 @@ AWS App Runner can build your container automatically from your repository or pu
 2. **Environment Variables**:
    Configure the following variables in the App Runner Service Settings:
    - `DATABASE_URL`: `postgresql+psycopg://<username>:<password>@<rds-endpoint>:5432/<db-name>`
-   - `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`: API Key for LLM SQL generation.
+   - `GEMINI_API_KEY`: API Key for Google Gemini LLM SQL generation.
+   - `GEMINI_MODEL`: Optional model name (e.g. `gemini-2.5-flash`).
    - `ALLOWED_ORIGINS`: Comma-separated allowed CORS origins (e.g. `https://main.xxxxxxxx.amplifyapp.com` or custom frontend domain).
    - `BYPASS_DNS_TIMEOUTS`: Set to `false` (default) for AWS (only set `true` for local development if experiencing DNS resolution issues).
 

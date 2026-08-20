@@ -1,6 +1,6 @@
 # Text-to-SQL Analytics — Backend
 
-FastAPI service that converts natural language questions into safe SQL queries using Gemini or Claude Haiku, executes them against relational databases, and caches them in Redis with fine-grained schema-aware invalidation.
+FastAPI service that converts natural language questions into safe SQL queries using Google Gemini (with automatic zero-downtime local Ollama `qwen2.5-coder:7b` fallback when offline or rate limited), executes them against relational databases, and caches them in Redis with fine-grained schema-aware invalidation.
 
 ## Setup
 
@@ -19,7 +19,8 @@ FastAPI service that converts natural language questions into safe SQL queries u
    ```
    Fill in:
    - `DATABASE_URL` — PostgreSQL connection string
-   - `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` — LLM API Key
+   - `GEMINI_API_KEY` — Google Gemini API Key
+   - `GEMINI_MODEL` (default: `gemini-2.5-flash`)
    - `REDIS_HOST` (default: `localhost`), `REDIS_PORT` (default: `6379`)
 
 3. **Start Redis Server (Required for Caching)**:
