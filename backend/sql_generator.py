@@ -93,6 +93,7 @@ SQL Query:"""
             
             sql = parts[0].get("text", "").strip()
             tokens_used = res_data.get("usageMetadata", {}).get("totalTokenCount", 0)
+            _check_sentinel(_strip_markdown_fences(sql))
             return _strip_markdown_fences(sql), tokens_used
     except urllib.error.HTTPError as e:
         error_msg = e.read().decode("utf-8")
@@ -160,6 +161,7 @@ SQL Query:"""
             eval_count = res_data.get("eval_count") or 0
             prompt_eval_count = res_data.get("prompt_eval_count") or 0
             tokens_used = eval_count + prompt_eval_count
+            _check_sentinel(_strip_markdown_fences(sql))
             return _strip_markdown_fences(sql), tokens_used
     except urllib.error.HTTPError as e:
         error_msg = e.read().decode("utf-8")
