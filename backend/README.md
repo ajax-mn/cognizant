@@ -1,16 +1,14 @@
 # Text-to-SQL Analytics — Backend
 
-FastAPI service that converts natural language questions into safe, read-only
-PostgreSQL `SELECT` queries using Google Gemini with automatic local
-Ollama fallback (`qwen2.5-coder:7b`) when offline, rate limited, or unconfigured,
-executes them, and returns the results.
+FastAPI service that converts natural language questions into safe SQL queries using Gemini or Claude Haiku, executes them against relational databases, and caches them in Redis with fine-grained schema-aware invalidation.
 
 ## Setup
 
-1. Create a virtual environment and install dependencies:
-   ```
+1. **Create a virtual environment and install dependencies**:
+   ```bash
    python -m venv .venv
-   .venv\Scripts\activate   (Windows)
+   .venv\Scripts\activate   # Windows
+   # source .venv/bin/activate # macOS/Linux
    pip install -r requirements.txt
    ```
 
@@ -21,18 +19,41 @@ executes them, and returns the results.
 
 3. Create the database and load sample data:
    ```
-   createdb text_to_sql_db
-   psql "$env:DATABASE_URL" -f sample_schema.sql
-   ```
-   (Adjust connection details for your `psql` install/PATH.)
+   Fill in:
+   - `DATABASE_URL` — PostgreSQL connection string
+   - `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` — LLM API Key
+   - `REDIS_HOST` (default: `localhost`), `REDIS_PORT` (default: `6379`)
 
 4. Run the server:
    ```
    uvicorn main:app --reload
    ```
    The API will be available at http://localhost:8000 (docs at `/docs`).
+3. **Start Redis Server (Required for Caching)**:
+   Choose **one** of the following options:
 
-## API
+   - **Option A (Docker - Easiest & Recommended)**:
+     From repository root:
+     ```bash
+     docker compose up -d
+     ```
+   - **Option B (Windows via Winget or WSL)**:
+     ```bash
+     winget install Redis.Redis
+     # Or using WSL:
+     # sudo apt install redis-server && sudo service redis-server start
+     ```
+   - **Option C (macOS)**:
+     ```bash
+     brew install redis && brew services start redis
+     ```
+   - **Option D (Free Cloud Redis - e.g. Upstash or Redis.com)**:
+     Set your cloud Redis endpoint and password in `backend/.env`:
+     ```env
+     REDIS_HOST=your-redis-cloud-endpoint.com
+     REDIS_PORT=6379
+     REDIS_PASSWORD=your_password
+     ```
 
 - `GET /health` — liveness check
 - `GET /schema` — introspects and returns the database schema
@@ -40,10 +61,17 @@ executes them, and returns the results.
   it, executes it, and returns `{ question, sql, columns, rows, row_count }`
 - `POST /execute-sql` — `{ "sql": "SELECT ..." }` → validates and runs a
   hand-written SELECT query directly
+4. **Run the Backend Server**:
+   ```bash
+   uvicorn main:app --reload
+   ```
+   The API will be available at http://localhost:8000 (Swagger docs at `http://localhost:8000/docs`).
 
-## Safety
+## API Endpoints
 
-All generated/submitted SQL passes through `sql_validator.py`, which requires
-the statement to start with `SELECT`, rejects a fixed list of mutating
-keywords (`DROP`, `ALTER`, `DELETE`, `INSERT`, `UPDATE`, `CREATE TABLE`,
-`TRUNCATE`, `GRANT`, `REVOKE`), and rejects multi-statement input.
+- `GET /health` — Health check
+- `GET /schema` — Introspects database schema & relationships
+- `POST /query` — Converts natural language to SQL, checks Redis cache, executes query
+- `POST /execute-sql` — Runs a raw SQL query directly
+- `POST /database/upload` — Upload ad-hoc SQLite database
+- `GET /analytics/cache` — Observability metrics for cache hit rate, cost saved, and audit log

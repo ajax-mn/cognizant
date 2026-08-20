@@ -6,6 +6,11 @@ if os.getenv("BYPASS_DNS_TIMEOUTS", "false").lower() == "true":
     _orig_getaddrinfo = socket.getaddrinfo
 
     def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        """
+        Custom DNS resolution function used to monkeypatch socket.getaddrinfo.
+        This forces specific IP addresses for the Gemini API and Neon PostgreSQL pooler
+        to bypass potentially slow or failing local DNS lookups, improving startup and request speed.
+        """
         if host == "generativelanguage.googleapis.com":
             return _orig_getaddrinfo("172.217.117.4", port, family, type, proto, flags)
         elif host == "ep-wispy-sun-axuj92z8-pooler.c-4.us-east-2.aws.neon.tech":
@@ -28,8 +33,9 @@ import schema_hasher
 from analytics import router as analytics_router
 from database import get_db_session, get_engine
 from db_connections import InvalidDatabaseFileError
-from db_models import Base, CacheAuditLog, QueryCache
+from db_models import Base
 from models import ExecuteSQLRequest, QueryRequest, QueryResponse, UploadDatabaseResponse
+from question_validator import validate_question
 from schema_introspection import format_schema_for_context, get_database_schema
 from sql_generator import generate_sql_from_question
 from sql_templates import try_template_match
@@ -40,6 +46,25 @@ app.include_router(analytics_router)
 
 # Create the query cache tables on startup if they don't already exist.
 Base.metadata.create_all(bind=get_engine())
+# Safely ensure all columns and tables exist in the database
+_startup_statements = [
+    "ALTER TABLE cache_audit_log ADD COLUMN IF NOT EXISTS connection_id VARCHAR(64)",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS connection_id VARCHAR(64)",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS question TEXT",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS question_hash VARCHAR(64)",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS schema_hash_at_cache_time VARCHAR(64)",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS api_tokens_used INTEGER DEFAULT 0",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS api_cost DOUBLE PRECISION DEFAULT 0.0",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS hit_count INTEGER DEFAULT 0",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS cache_status VARCHAR(32) DEFAULT 'miss'",
+    "ALTER TABLE dynamic_query_cache ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+]
+for _stmt in _startup_statements:
+    try:
+        with get_engine().begin() as _conn:
+            _conn.execute(text(_stmt))
+    except Exception:
+        pass
 
 ENABLE_QUERY_CACHE = os.getenv("ENABLE_QUERY_CACHE", "true").lower() == "true"
 CACHE_INVALIDATION_ON_SCHEMA_CHANGE = (
@@ -62,6 +87,14 @@ app.add_middleware(
 
 
 def _run_select(sql: str, engine: Engine) -> tuple[list[str], list[dict]]:
+    """
+    Executes a read-only SELECT query against the provided database engine.
+    
+    Returns:
+        A tuple containing:
+        - A list of column names (strings).
+        - A list of rows (each row is a dictionary mapping column names to values).
+    """
     with engine.connect() as conn:
         result = conn.execute(text(sql))
         columns = list(result.keys())
@@ -70,39 +103,66 @@ def _run_select(sql: str, engine: Engine) -> tuple[list[str], list[dict]]:
 
 
 def _run_write(sql: str, engine: Engine) -> int:
-    """Execute a write/DDL statement and return the number of affected rows."""
+    """
+    Executes a write or DDL statement (e.g., INSERT, UPDATE, DELETE, CREATE) against the database.
+    This runs in a transaction context (engine.begin()) to ensure safety.
+    
+    Returns:
+        The number of rows affected by the query. Returns 0 if the query does not affect rows.
+    """
     with engine.begin() as conn:
         result = conn.execute(text(sql))
         return result.rowcount if result.rowcount and result.rowcount >= 0 else 0
 
 
 def _resolve_engine(connection_id: str | None) -> Engine:
-    """Default DATABASE_URL engine, unless an uploaded DB connection_id is given."""
+    """
+    Determines which SQLAlchemy Engine to use for the incoming request.
+    
+    If a connection_id is provided, it retrieves the engine for the corresponding
+    user-uploaded SQLite database. If connection_id is None, it defaults to the
+    main PostgreSQL engine (configured via DATABASE_URL).
+    """
     try:
         return db_connections.get_engine_for_connection(connection_id, get_engine())
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown connection_id: {connection_id}")
+        raise HTTPException(status_code=404, detail="Uploaded database session not found. Please re-upload your file.")
 
 
 @app.get("/health")
 def health():
+    """
+    Basic health check endpoint. Used by deployment platforms (like AWS, Render, etc.)
+    and load balancers to verify that the API is running and responsive.
+    """
     return {"status": "ok"}
 
 
 @app.get("/schema")
 def schema(connection_id: str | None = None):
+    """
+    Retrieves the database schema (tables and columns) for the active connection.
+    This is called by the frontend to display the available schema to the user
+    and is also used internally to provide context to the LLM when generating SQL.
+    """
     try:
         engine = _resolve_engine(connection_id)
-        tables = get_database_schema(engine)
-        return {"tables": tables}
+        schema_data = get_database_schema(engine)
+        return schema_data
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to read the database schema.")
 
 
 @app.post("/database/upload", response_model=UploadDatabaseResponse)
 async def upload_database(file: UploadFile):
+    """
+    Accepts a user-uploaded SQLite database file (.db).
+    The file is saved locally and registered as an active, read-only ad-hoc connection.
+    This allows users to immediately query their own custom datasets without
+    overwriting or affecting the main PostgreSQL database.
+    """
     file_bytes = await file.read()
     try:
         connection = db_connections.register_uploaded_db(file_bytes, file.filename or "uploaded.db")
@@ -114,12 +174,26 @@ async def upload_database(file: UploadFile):
 
 @app.delete("/database/{connection_id}")
 def remove_uploaded_database(connection_id: str):
+    """
+    Cleans up and removes a previously uploaded ad-hoc SQLite database connection.
+    This frees up resources and deletes the file from the server's local storage.
+    """
     db_connections.remove_connection(connection_id)
     return {"status": "removed"}
 
 
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest, db: Session = Depends(get_db_session)):
+    """
+    The main text-to-SQL endpoint. It takes a natural language question and returns
+    both the generated SQL and the resulting data.
+    
+    Workflow:
+    1. Check Cache: Looks for an existing, valid generated query for this exact question.
+    2. Fallback to Templates: If no cache exists, checks if the question matches a known, simple regex pattern (fast-path).
+    3. Generate via LLM: If templates fail, calls Gemini/Claude to generate the SQL.
+    4. Validation & Execution: Ensures the query is safe, runs it against the selected database, and records metrics (cost, time).
+    """
     engine = _resolve_engine(request.connection_id)
     start_time = time.perf_counter()
 
@@ -133,37 +207,37 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     sql = None
     cached_entry = None
     schema_changed_invalidation = False
-    # Scoped by connection_id so an uploaded DB never shares cache entries
-    # with the default database (or with a different upload).
     question_hash = cache_validator.compute_question_hash(request.question, request.connection_id)
 
-    # 1. Try the cache first (only ever populated by LLM-generated queries).
+    # 1. Try the Redis cache first (only ever populated by LLM-generated queries).
     if ENABLE_QUERY_CACHE:
-        existing_entry = db.query(QueryCache).filter_by(question_hash=question_hash).first()
-        if existing_entry is not None:
-            valid, current_hash = cache_validator.is_cache_valid(existing_entry, engine)
-            if valid:
-                cached_entry = existing_entry
-                sql = existing_entry.generated_sql
-                source = "llm"
-                from_cache = True
-                cache_status = "hit"
-                schema_hash = current_hash
-                api_cost_saved = existing_entry.api_cost
-                # execution time is recorded below, once the query actually runs.
-            elif CACHE_INVALIDATION_ON_SCHEMA_CHANGE:
-                cache_validator.invalidate_cache_entry(
-                    question_hash, db, reason="schema_changed", new_schema_hash=current_hash
-                )
-                schema_changed_invalidation = True
+        cached_entry = cache_validator.check_redis_cache(
+            request.question, request.connection_id, engine
+        )
+        if cached_entry is not None:
+            sql = cached_entry["sql"]
+            source = "llm"
+            from_cache = True
+            cache_status = "hit"
+            schema_hash = cached_entry.get("schema_hash")
+            api_cost_saved = cached_entry.get("cost", 0.0)
+        else:
+            cache_status = "miss"
 
     # 2. No valid cache entry: try the deterministic template match, then the LLM.
     if sql is None:
         try:
-            tables = get_database_schema(engine)
-            schema_context = format_schema_for_context(tables)
+            schema_data = get_database_schema(engine)
+            tables = schema_data.get("tables", {})
+            schema_context = format_schema_for_context(schema_data)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to read schema: {e}")
+            raise HTTPException(status_code=500, detail="Failed to read the database schema.")
+
+        # Validate the question before hitting templates or the LLM.
+        try:
+            validate_question(request.question, tables)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         sql = try_template_match(request.question, tables)
         source = "template"
@@ -172,7 +246,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
             try:
                 sql, tokens_used = generate_sql_from_question(request.question, schema_context)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"SQL generation failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
             source = "llm"
 
             try:
@@ -184,15 +258,13 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
             cache_status = "regenerated_schema_changed" if schema_changed_invalidation else "miss"
 
             if ENABLE_QUERY_CACHE and schema_hash is not None:
-                cache_validator.update_cache_entry(
+                cache_validator.update_redis_cache(
                     question=request.question,
-                    question_hash=question_hash,
-                    new_sql=sql,
-                    new_hash=schema_hash,
+                    connection_id=request.connection_id,
+                    sql=sql,
+                    engine=engine,
                     tokens_used=tokens_used,
                     api_cost=api_cost,
-                    db_session=db,
-                    cache_status=cache_status,
                 )
 
     # If the generated query is a write / DDL statement, either execute it
@@ -207,13 +279,22 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
                 row_count=0,
                 source=source,
                 is_preview=True,
+                from_cache=False,
+                is_cached=False,
+                cache_status="n/a",
+                execution_time_ms=0,
+                generation_time_ms=0,
+                api_tokens_used=tokens_used,
+                api_cost=api_cost,
+                api_cost_saved=0.0,
+                cost_saved=0.0,
             )
 
         # Write mode is ON — execute the statement.
         try:
             affected = _run_write(sql, engine)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Write query failed: {e} | SQL: {sql}")
+            raise HTTPException(status_code=400, detail="Write query failed to execute.")
 
         execution_time_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -225,40 +306,45 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
             row_count=1,
             source=source,
             is_preview=False,
+            from_cache=False,
+            is_cached=False,
+            cache_status="n/a",
             execution_time_ms=execution_time_ms,
+            generation_time_ms=execution_time_ms,
             api_tokens_used=tokens_used,
             api_cost=api_cost,
+            api_cost_saved=0.0,
+            cost_saved=0.0,
         )
 
     try:
         validate_sql(sql)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Generated SQL rejected: {e} | SQL: {sql}")
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         columns, rows = _run_select(sql, engine)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Query execution failed: {e} | SQL: {sql}")
+        raise HTTPException(status_code=400, detail="Query failed to run")
 
     execution_time_ms = int((time.perf_counter() - start_time) * 1000)
 
-    if from_cache:
-        cache_validator.record_cache_hit(cached_entry, db, execution_time_ms)
-    elif source == "llm":
-        db.add(
-            CacheAuditLog(
-                question=request.question,
-                cache_status=cache_status,
-                reason="schema_changed" if cache_status == "regenerated_schema_changed" else None,
-                old_schema_hash=None,
-                new_schema_hash=schema_hash,
-                query_execution_time_ms=execution_time_ms,
-                api_tokens_used=tokens_used,
-                api_cost_saved=0.0,
-                user_id="demo_user",
-            )
+    if from_cache and cached_entry is not None:
+        cache_validator.record_cache_hit(
+            question=request.question,
+            cached_data=cached_entry,
+            execution_time_ms=execution_time_ms,
+            connection_id=request.connection_id,
         )
-        db.commit()
+    elif source == "llm":
+        cache_validator.record_cache_miss(
+            question=request.question,
+            execution_time_ms=execution_time_ms,
+            tokens_used=tokens_used,
+            schema_hash=schema_hash,
+            cache_status=cache_status,
+            connection_id=request.connection_id,
+        )
 
     return QueryResponse(
         question=request.question,
@@ -268,17 +354,25 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
         row_count=len(rows),
         source=source,
         from_cache=from_cache,
+        is_cached=from_cache,
         cache_status=cache_status,
         schema_hash=schema_hash,
         execution_time_ms=execution_time_ms,
+        generation_time_ms=execution_time_ms,
         api_tokens_used=tokens_used,
         api_cost=api_cost,
         api_cost_saved=api_cost_saved,
+        cost_saved=api_cost_saved,
     )
 
 
 @app.post("/execute-sql")
 def execute_sql(request: ExecuteSQLRequest):
+    """
+    Executes a raw SQL statement provided directly by the client.
+    This bypasses natural language generation, but the query is still strictly validated
+    to ensure it is a safe, read-only SELECT statement.
+    """
     try:
         validate_sql(request.sql)
     except ValueError as e:
@@ -289,6 +383,6 @@ def execute_sql(request: ExecuteSQLRequest):
     try:
         columns, rows = _run_select(request.sql, engine)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Query execution failed: {e}")
+        raise HTTPException(status_code=400, detail="Query failed to run. Please check your SQL and try again.")
 
     return {"sql": request.sql, "columns": columns, "rows": rows, "row_count": len(rows)}

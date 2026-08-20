@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
 
 :root {
   color-scheme: light;
@@ -17,4 +18,42 @@ body {
 
 * {
   box-sizing: border-box;
+}
+
+/* React Flow custom overrides for sleek modern look */
+.react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #3b82f6;
+  border: 2px solid #ffffff;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.react-flow__handle:hover {
+  transform: scale(1.4);
+  background-color: #2563eb;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2px;
+  stroke: #94a3b8;
+  transition: stroke 0.2s ease, stroke-width 0.2s ease;
+}
+
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #3b82f6;
+  stroke-width: 2.5px;
+}
+
+.react-flow__controls button {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  fill: #475569;
+}
+
+.react-flow__controls button:hover {
+  background: #f8fafc;
+  fill: #0f172a;
 }

@@ -24,6 +24,20 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+_SENTINEL = "INSUFFICIENT_DATA"
+
+
+def _check_sentinel(sql: str) -> None:
+    """Raise a user-friendly RuntimeError when the LLM signals it cannot
+    answer the question from the schema (returns our sentinel string)."""
+    if sql.strip().upper() == _SENTINEL:
+        raise RuntimeError(
+            "Your question doesn't seem to be about the available data. "
+            "Please ask something specific, e.g. 'Show all orders' or "
+            "'Total revenue by country'."
+        )
+
+
 def _generate_sql_using_gemini(question: str, schema_context: str, api_key: str) -> tuple[str, int]:
     prompt = f"""You are a SQL expert. Convert the following natural language question into a valid PostgreSQL query.
 
@@ -33,11 +47,13 @@ Database Schema:
 User Question: {question}
 
 IMPORTANT RULES:
-1. Return ONLY the SQL query, no markdown, no explanation
-2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.)
-3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed
-4. If the question is ambiguous, make reasonable assumptions
-5. Ensure the query is syntactically correct
+1. Return ONLY the SQL query, no markdown, no explanation.
+2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.).
+3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed.
+4. If the question is ambiguous, make reasonable assumptions.
+5. Ensure the query is syntactically correct.
+6. If the question is NOT related to the database schema (e.g. greetings, random words, off-topic requests),
+   respond with exactly the word: INSUFFICIENT_DATA — nothing else.
 
 SQL Query:"""
 
@@ -105,11 +121,13 @@ Database Schema:
 User Question: {question}
 
 IMPORTANT RULES:
-1. Return ONLY the SQL query, no markdown, no explanation
-2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.)
-3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed
-4. If the question is ambiguous, make reasonable assumptions
-5. Ensure the query is syntactically correct
+1. Return ONLY the SQL query, no markdown, no explanation.
+2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.).
+3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed.
+4. If the question is ambiguous, make reasonable assumptions.
+5. Ensure the query is syntactically correct.
+6. If the question is NOT related to the database schema (e.g. greetings, random words, off-topic requests),
+   respond with exactly the word: INSUFFICIENT_DATA — nothing else.
 
 SQL Query:"""
     auth_string = f"{auth_user}:{auth_pass}"

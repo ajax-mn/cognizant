@@ -8,6 +8,7 @@ class QueryRequest(BaseModel):
     question: str
     connection_id: str | None = None  # targets an uploaded DB instead of the default DATABASE_URL
     allow_write: bool = False  # when True, write/DDL queries are executed on the database
+    user_id: str | None = None  # user identifier for isolated Redis cache space
 
 
 class QueryResponse(BaseModel):
@@ -28,6 +29,11 @@ class QueryResponse(BaseModel):
     api_cost: float = 0.0
     api_cost_saved: float = 0.0
 
+    # Standardized metadata flags for frontend components
+    is_cached: bool = False
+    generation_time_ms: int = 0
+    cost_saved: float = 0.0
+
 
 class ExecuteSQLRequest(BaseModel):
     sql: str
@@ -45,9 +51,10 @@ class ErrorResponse(BaseModel):
 
 class TopCachedQuery(BaseModel):
     question: str
+    sql: str = ""
     hit_count: int
     cost_saved: float
-    last_used_at: datetime | None
+
 
 
 class CacheAnalyticsResponse(BaseModel):
@@ -59,14 +66,3 @@ class CacheAnalyticsResponse(BaseModel):
     total_cost_saved: float
     top_cached_queries: list[TopCachedQuery]
 
-
-class CacheInvalidationEvent(BaseModel):
-    question: str
-    reason: str | None
-    old_schema_hash: str | None
-    new_schema_hash: str | None
-    created_at: datetime | None
-
-
-class CacheInvalidationsResponse(BaseModel):
-    invalidations: list[CacheInvalidationEvent]

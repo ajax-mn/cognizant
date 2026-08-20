@@ -24,40 +24,40 @@ export interface UploadDatabaseResponse {
 
 export interface TopCachedQuery {
   question: string;
+  sql: string;
   hit_count: number;
   cost_saved: number;
-  last_used_at: string | null;
 }
 
 export interface CacheAnalyticsResponse {
   total_queries_cached: number;
   total_cache_hits: number;
   total_cache_misses: number;
-  total_invalidations: number;
   hit_rate: number;
   total_cost_saved: number;
   top_cached_queries: TopCachedQuery[];
 }
 
-export interface CacheInvalidationEvent {
-  question: string;
-  reason: string | null;
-  old_schema_hash: string | null;
-  new_schema_hash: string | null;
-  created_at: string | null;
-}
-
-export interface CacheInvalidationsResponse {
-  invalidations: CacheInvalidationEvent[];
-}
-
 export interface SchemaColumn {
   name: string;
   type: string;
+  primary_key?: boolean;
+  is_foreign_key?: boolean;
+  nullable?: boolean;
+}
+
+export interface SchemaRelationship {
+  id?: string;
+  source_table: string;
+  source_column: string;
+  target_table: string;
+  target_column: string;
+  constraint_name?: string | null;
 }
 
 export interface SchemaResponse {
   tables: Record<string, SchemaColumn[]>;
+  relationships?: SchemaRelationship[];
 }
 
 const BASE_URL = import.meta.env.VITE_API_URL || "/api";
@@ -115,12 +115,27 @@ export async function removeUploadedDatabase(connectionId: string): Promise<void
   });
 }
 
-export async function fetchCacheAnalytics(): Promise<CacheAnalyticsResponse> {
-  const res = await fetch(`${BASE_URL}/analytics/cache`);
+export interface FetchCacheAnalyticsOptions {
+  isDefault?: boolean;
+  connectionId?: string | null;
+  schemaHash?: string | null;
+}
+
+export async function fetchCacheAnalytics(
+  options?: FetchCacheAnalyticsOptions
+): Promise<CacheAnalyticsResponse> {
+  const params = new URLSearchParams();
+  if (options?.isDefault !== undefined) {
+    params.set("is_default", String(options.isDefault));
+  }
+  if (options?.connectionId) {
+    params.set("connection_id", options.connectionId);
+  }
+  if (options?.schemaHash) {
+    params.set("schema_hash", options.schemaHash);
+  }
+  const queryString = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${BASE_URL}/analytics/cache${queryString}`);
   return handleResponse<CacheAnalyticsResponse>(res);
 }
 
-export async function fetchCacheInvalidations(): Promise<CacheInvalidationsResponse> {
-  const res = await fetch(`${BASE_URL}/analytics/cache-invalidations`);
-  return handleResponse<CacheInvalidationsResponse>(res);
-}
