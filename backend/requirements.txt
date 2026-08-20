@@ -7,3 +7,4 @@ python-dotenv==1.2.2
 sqlparse==0.6.0
 pydantic==2.13.4
 python-multipart==0.0.20
+python-dotenv
