@@ -33,8 +33,9 @@ import schema_hasher
 from analytics import router as analytics_router
 from database import get_db_session, get_engine
 from db_connections import InvalidDatabaseFileError
-from db_models import Base, CacheAuditLog, DynamicQueryCache, QueryCache
+from db_models import Base
 from models import ExecuteSQLRequest, QueryRequest, QueryResponse, UploadDatabaseResponse
+from question_validator import validate_question
 from schema_introspection import format_schema_for_context, get_database_schema
 from sql_generator import generate_sql_from_question
 from sql_templates import try_template_match
@@ -209,7 +210,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     # 1. Try the Redis cache first (only ever populated by LLM-generated queries).
     if ENABLE_QUERY_CACHE:
         cached_entry = cache_validator.check_redis_cache(
-            request.question, request.connection_id, engine, db
+            request.question, request.connection_id, engine
         )
         if cached_entry is not None:
             sql = cached_entry["sql"]
@@ -229,6 +230,12 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
             schema_context = format_schema_for_context(schema_data)
         except Exception as e:
             raise HTTPException(status_code=500, detail="Failed to read the database schema.")
+
+        # Validate the question before hitting templates or the LLM.
+        try:
+            validate_question(request.question, tables)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         sql = try_template_match(request.question, tables)
         source = "template"
@@ -255,7 +262,6 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
                     engine=engine,
                     tokens_used=tokens_used,
                     api_cost=api_cost,
-                    db_session=db,
                 )
 
     # If the generated query is a write / DDL statement, either execute it
@@ -316,7 +322,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     try:
         columns, rows = _run_select(sql, engine)
     except Exception as e:
-        raise HTTPException(status_code=400, detail="Query failed to run. Try rephrasing your question.")
+        raise HTTPException(status_code=400, detail="Query failed to run")
 
     execution_time_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -324,14 +330,12 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
         cache_validator.record_cache_hit(
             question=request.question,
             cached_data=cached_entry,
-            db_session=db,
             execution_time_ms=execution_time_ms,
             connection_id=request.connection_id,
         )
     elif source == "llm":
         cache_validator.record_cache_miss(
             question=request.question,
-            db_session=db,
             execution_time_ms=execution_time_ms,
             tokens_used=tokens_used,
             schema_hash=schema_hash,

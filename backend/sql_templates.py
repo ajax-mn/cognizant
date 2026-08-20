@@ -57,14 +57,57 @@ def _find_numeric_column(columns: list[dict[str, str]]) -> Optional[str]:
     return None
 
 
+# Trailing "sort/order by" clauses that can be stripped off a question, in the
+# form (base question, column word, direction word-or-None). Tried in order;
+# the first one that matches wins. All patterns anchor to the end of the
+# question so they only ever consume a genuine trailing clause.
+_ORDER_SUFFIX_PATTERNS = [
+    re.compile(r"^(?P<base>.*?)\s+in (?P<dir>ascending|descending|asc|desc) order of (?P<col>\w+)$"),
+    re.compile(r"^(?P<base>.*?)\s+(?:ordered|sorted) by (?P<col>\w+) in (?P<dir>ascending|descending|asc|desc) order$"),
+    re.compile(r"^(?P<base>.*?)\s+by (?P<col>\w+) in (?P<dir>ascending|descending|asc|desc) order$"),
+    re.compile(r"^(?P<base>.*?)\s+(?:ordered|sorted) by (?P<col>\w+)(?: in)? (?P<dir>ascending|descending|asc|desc)$"),
+    re.compile(r"^(?P<base>.*?)\s+by (?P<col>\w+) (?P<dir>ascending|descending|asc|desc)$"),
+    re.compile(r"^(?P<base>.*?)\s+(?:ordered|sorted) by (?P<col>\w+)$"),
+]
+
+
+def _normalize_direction(word: Optional[str]) -> str:
+    return "DESC" if word and word.lower().startswith("desc") else "ASC"
+
+
+def _extract_order_suffix(q: str) -> tuple[str, Optional[str], str]:
+    """Splits a trailing sort clause off a question, if present.
+
+    Returns (base_question, column_word, direction). If no sort clause is
+    detected, column_word is None and base_question is just `q`.
+    """
+    for pattern in _ORDER_SUFFIX_PATTERNS:
+        m = pattern.match(q)
+        if m:
+            gd = m.groupdict()
+            return gd["base"].strip(), gd["col"], _normalize_direction(gd.get("dir"))
+    return q, None, "ASC"
+
+
 def try_template_match(question: str, tables: SchemaTables) -> Optional[str]:
     q = question.strip().lower().rstrip("?.! ")
+    base_q, order_col_word, order_dir = _extract_order_suffix(q)
 
-    # "list/show/get all <table>"
-    m = re.fullmatch(r"(?:list|show|get)(?: me)? all (\w+)", q)
+    # "list/show/get all <table>", optionally followed by a sort clause, e.g.
+    # "list all customers in ascending order of name" or
+    # "list all customers sorted by name descending".
+    m = re.fullmatch(r"(?:list|show|get)(?: me)? all (\w+)", base_q)
     if m:
         table = resolve_table(m.group(1), tables)
         if table:
+            if order_col_word:
+                order_col = resolve_column(order_col_word, tables[table])
+                # Only return SQL once the sort column itself resolves
+                # unambiguously; otherwise defer to the LLM rather than
+                # silently dropping the requested ordering.
+                if order_col:
+                    return f"SELECT * FROM {table} ORDER BY {order_col} {order_dir} LIMIT 100"
+                return None
             return f"SELECT * FROM {table} LIMIT 100"
 
     # "how many <table> are there" / "count of <table>" / "how many <table> do we have"
