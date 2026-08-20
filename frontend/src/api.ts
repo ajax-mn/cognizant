@@ -33,22 +33,9 @@ export interface CacheAnalyticsResponse {
   total_queries_cached: number;
   total_cache_hits: number;
   total_cache_misses: number;
-  total_invalidations: number;
   hit_rate: number;
   total_cost_saved: number;
   top_cached_queries: TopCachedQuery[];
-}
-
-export interface CacheInvalidationEvent {
-  question: string;
-  reason: string | null;
-  old_schema_hash: string | null;
-  new_schema_hash: string | null;
-  created_at: string | null;
-}
-
-export interface CacheInvalidationsResponse {
-  invalidations: CacheInvalidationEvent[];
 }
 
 export interface SchemaColumn {
@@ -152,20 +139,3 @@ export async function fetchCacheAnalytics(
   return handleResponse<CacheAnalyticsResponse>(res);
 }
 
-export async function fetchCacheInvalidations(
-  options?: FetchCacheAnalyticsOptions
-): Promise<CacheInvalidationsResponse> {
-  const params = new URLSearchParams();
-  if (options?.isDefault !== undefined) {
-    params.set("is_default", String(options.isDefault));
-  }
-  if (options?.connectionId) {
-    params.set("connection_id", options.connectionId);
-  }
-  if (options?.schemaHash) {
-    params.set("schema_hash", options.schemaHash);
-  }
-  const queryString = params.toString() ? `?${params.toString()}` : "";
-  const res = await fetch(`${BASE_URL}/analytics/cache-invalidations${queryString}`);
-  return handleResponse<CacheInvalidationsResponse>(res);
-}
