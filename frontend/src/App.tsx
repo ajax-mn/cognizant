@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { fetchSchema, runQuery, type QueryResponse, type SchemaResponse } from "./api";
+import { fetchSchema, runQuery, type ChatMessage, type QueryResponse, type SchemaResponse } from "./api";
 import { SchemaPanel } from "./components/SchemaPanel";
 import { QueryForm } from "./components/QueryForm";
+import { FollowUpForm } from "./components/FollowUpForm";
 import { ResultsTable } from "./components/ResultsTable";
 import { CacheAnalytics } from "./components/CacheAnalytics";
 import { DatabaseSelector } from "./components/DatabaseSelector";
@@ -22,6 +23,9 @@ function App() {
   const [lastQuestion, setLastQuestion] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"query" | "cache">("query");
 
+  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
+  const [previousSql, setPreviousSql] = useState<string | null>(null);
+
   // null = using the default configured DATABASE_URL database.
   const [activeConnection, setActiveConnection] = useState<ActiveConnection | null>(null);
 
@@ -38,17 +42,59 @@ function App() {
     loadSchema(activeConnection?.connectionId ?? null);
     // Switching databases invalidates any results shown from the previous one.
     setResult(null);
+    setConversationHistory([]);
+    setPreviousSql(null);
   }, [activeConnection]);
 
-  async function handleSubmit(question: string) {
+  async function handleMainQuery(question: string) {
     setQueryLoading(true);
     setQueryError(null);
     setLastQuestion(question);
+    // Reset conversation history & SQL context for new main query
+    setConversationHistory([]);
+    setPreviousSql(null);
+
     try {
       const response = await runQuery(question, activeConnection?.connectionId ?? null);
       setResult(response);
+      setPreviousSql(response.sql);
+      setConversationHistory([
+        { role: "user", content: question },
+        { role: "assistant", content: response.sql },
+      ]);
     } catch (err) {
       setResult(null);
+      setQueryError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setQueryLoading(false);
+    }
+  }
+
+  async function handleFollowUpQuery(followUpQuestion: string) {
+    setQueryLoading(true);
+    setQueryError(null);
+    setLastQuestion(followUpQuestion);
+
+    const curHistory: ChatMessage[] = [
+      ...conversationHistory,
+      { role: "user", content: followUpQuestion },
+    ];
+    const curSql = previousSql || result?.sql || null;
+
+    try {
+      const response = await runQuery(
+        followUpQuestion,
+        activeConnection?.connectionId ?? null,
+        curSql,
+        conversationHistory
+      );
+      setResult(response);
+      setPreviousSql(response.sql);
+      setConversationHistory([
+        ...curHistory,
+        { role: "assistant", content: response.sql },
+      ]);
+    } catch (err) {
       setQueryError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setQueryLoading(false);
@@ -101,7 +147,7 @@ function App() {
         <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
           {activeTab === "query" ? (
             <>
-              <QueryForm onSubmit={handleSubmit} loading={queryLoading} />
+              <QueryForm onSubmit={handleMainQuery} loading={queryLoading} />
 
               {queryError && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -116,7 +162,12 @@ function App() {
                 </p>
               )}
 
-              {result && !queryLoading && <ResultsTable result={result} />}
+              {result && !queryLoading && (
+                <div className="flex flex-col gap-6">
+                  <ResultsTable result={result} />
+                  <FollowUpForm onSubmit={handleFollowUpQuery} loading={queryLoading} />
+                </div>
+              )}
             </>
           ) : (
             <CacheAnalytics />

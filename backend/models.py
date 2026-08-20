@@ -7,6 +7,8 @@ from pydantic import BaseModel
 class QueryRequest(BaseModel):
     question: str
     connection_id: str | None = None  # targets an uploaded DB instead of the default DATABASE_URL
+    previous_sql: str | None = None
+    conversation_history: list[dict[str, str]] | None = None
 
 
 class QueryResponse(BaseModel):

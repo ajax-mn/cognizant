@@ -81,14 +81,26 @@ export async function fetchSchema(connectionId?: string | null): Promise<SchemaR
   return handleResponse<SchemaResponse>(res);
 }
 
+export interface ChatMessage {
+  role: string;
+  content: string;
+}
+
 export async function runQuery(
   question: string,
-  connectionId?: string | null
+  connectionId?: string | null,
+  previousSql?: string | null,
+  conversationHistory?: ChatMessage[] | null
 ): Promise<QueryResponse> {
   const res = await fetch(`${BASE_URL}/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, connection_id: connectionId ?? null }),
+    body: JSON.stringify({
+      question,
+      connection_id: connectionId ?? null,
+      previous_sql: previousSql ?? null,
+      conversation_history: conversationHistory ?? null,
+    }),
   });
   return handleResponse<QueryResponse>(res);
 }

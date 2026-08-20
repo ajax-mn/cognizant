@@ -126,7 +126,12 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
     schema_changed_invalidation = False
     # Scoped by connection_id so an uploaded DB never shares cache entries
     # with the default database (or with a different upload).
-    question_hash = cache_validator.compute_question_hash(request.question, request.connection_id)
+    cache_question_key = (
+        f"{request.previous_sql} -> {request.question}"
+        if request.previous_sql
+        else request.question
+    )
+    question_hash = cache_validator.compute_question_hash(cache_question_key, request.connection_id)
 
     # 1. Try the cache first (only ever populated by LLM-generated queries).
     if ENABLE_QUERY_CACHE:
@@ -148,7 +153,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
                 )
                 schema_changed_invalidation = True
 
-    # 2. No valid cache entry: try the deterministic template match, then the LLM.
+    # 2. No valid cache entry: try the deterministic template match (for standalone queries), then the LLM.
     if sql is None:
         try:
             tables = get_database_schema(engine)
@@ -156,12 +161,19 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to read schema: {e}")
 
-        sql = try_template_match(request.question, tables)
-        source = "template"
+        if not request.previous_sql:
+            sql = try_template_match(request.question, tables)
+            source = "template"
 
         if sql is None:
             try:
-                sql, tokens_used = generate_sql_from_question(request.question, schema_context)
+                sql, tokens_used = generate_sql_from_question(
+                    request.question,
+                    schema_context,
+                    previous_sql=request.previous_sql,
+                    conversation_history=request.conversation_history,
+                    dialect=engine.dialect.name,
+                )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"SQL generation failed: {e}")
             source = "llm"
@@ -176,7 +188,7 @@ def query(request: QueryRequest, db: Session = Depends(get_db_session)):
 
             if ENABLE_QUERY_CACHE and schema_hash is not None:
                 cache_validator.update_cache_entry(
-                    question=request.question,
+                    question=cache_question_key,
                     question_hash=question_hash,
                     new_sql=sql,
                     new_hash=schema_hash,

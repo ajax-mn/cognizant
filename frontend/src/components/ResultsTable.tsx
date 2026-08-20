@@ -67,7 +67,7 @@ export function ResultsTable({ result }: { result: QueryResponse }) {
                 : "bg-indigo-50 text-indigo-700")
             }
           >
-            {result.source === "template" ? "Rule-based match" : "Claude"}
+            {result.source === "template" ? "Rule-based match" : "Gemini"}
           </span>
           <CacheBadge result={result} />
           <span className="ml-auto text-[11px] text-neutral-400">
