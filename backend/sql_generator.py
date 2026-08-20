@@ -4,6 +4,7 @@ import logging
 import urllib.request
 import urllib.error
 from dotenv import load_dotenv
+import base64
 
 load_dotenv()
 
@@ -104,9 +105,11 @@ SQL Query:"""
 
 
 def _generate_sql_using_ollama(question: str, schema_context: str) -> tuple[str, int]:
-    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
-
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+    ollama_user=os.getenv("OLLAMA_AUTH_USER")
+    ollama_pass=os.getenv("OLLAMA_AUTH_PASS")
+    ollama_model = os.getenv("OLLAMA_MODEL")
+   
     prompt = f"""You are a SQL expert. Convert the following natural language question into a valid PostgreSQL query.
 
 Database Schema:
@@ -133,10 +136,15 @@ SQL Query:"""
         }
     }
 
+    headers = {"Content-Type": "application/json"}
+    if ollama_user and ollama_pass:
+        creds = f"{ollama_user}:{ollama_pass}"
+        b64_creds = base64.b64encode(creds.encode()).decode()
+        headers["Authorization"] = f"Basic {b64_creds}"
     req = urllib.request.Request(
         url,
         data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST"
     )
 
