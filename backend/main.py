@@ -185,6 +185,20 @@ def remove_uploaded_database(connection_id: str):
     return {"status": "removed"}
 
 
+def _json_serial(obj):
+    """JSON serializer for objects not serializable by default json code (Decimal, date, datetime, UUID, etc.)"""
+    import datetime
+    import decimal
+    import uuid
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    return str(obj)
+
+
 @app.post("/query")
 async def query(request: QueryRequest):
     """
@@ -298,7 +312,7 @@ async def query(request: QueryRequest):
                             fallback_notice=fallback_notice,
                             model_used=model_used,
                         )
-                        status_queue.put({"type": "result", "data": resp.model_dump()})
+                        status_queue.put({"type": "result", "data": resp.model_dump(mode="json")})
                         return
 
                     # Write mode is ON — execute the statement.
@@ -329,7 +343,7 @@ async def query(request: QueryRequest):
                         fallback_notice=fallback_notice,
                         model_used=model_used,
                     )
-                    status_queue.put({"type": "result", "data": resp.model_dump()})
+                    status_queue.put({"type": "result", "data": resp.model_dump(mode="json")})
                     return
 
                 try:
@@ -381,7 +395,7 @@ async def query(request: QueryRequest):
                     fallback_notice=fallback_notice,
                     model_used=model_used,
                 )
-                status_queue.put({"type": "result", "data": resp.model_dump()})
+                status_queue.put({"type": "result", "data": resp.model_dump(mode="json")})
             except ValueError as ve:
                 status_queue.put({"type": "error", "detail": str(ve)})
             except Exception as e:
@@ -394,7 +408,7 @@ async def query(request: QueryRequest):
             await asyncio.sleep(0.01)
             while not status_queue.empty():
                 item = status_queue.get_nowait()
-                yield (json.dumps(item) + "\n").encode("utf-8")
+                yield (json.dumps(item, default=_json_serial) + "\n").encode("utf-8")
                 if item.get("type") in ("result", "error"):
                     worker_thread.join()
                     return
