@@ -1,15 +1,10 @@
 import { useEffect, useState } from "react";
 import {
   fetchCacheAnalytics,
-  fetchCacheInvalidations,
   type CacheAnalyticsResponse,
-  type CacheInvalidationsResponse,
 } from "../api";
 
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString();
-}
+
 
 function MetricCard({
   label,
@@ -38,7 +33,6 @@ export interface CacheAnalyticsProps {
 
 export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsProps) {
   const [analytics, setAnalytics] = useState<CacheAnalyticsResponse | null>(null);
-  const [invalidations, setInvalidations] = useState<CacheInvalidationsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -53,12 +47,10 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
     function load() {
       Promise.all([
         fetchCacheAnalytics({ isDefault: isDefaultDb, connectionId }),
-        fetchCacheInvalidations({ isDefault: isDefaultDb, connectionId }),
       ])
-        .then(([a, inv]) => {
+        .then(([a]) => {
           if (!cancelled) {
             setAnalytics(a);
-            setInvalidations(inv);
             setError(null);
             setLoading(false);
           }
@@ -102,7 +94,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
   }
 
   const total =
-    analytics.total_cache_hits + analytics.total_cache_misses + analytics.total_invalidations;
+    analytics.total_cache_hits + analytics.total_cache_misses;
 
   return (
     <div className="flex flex-col gap-6">
@@ -113,22 +105,21 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
           <div>
             <span className="text-xs font-semibold text-neutral-900">
               {isDefaultDb
-                ? "Default Database (PostgreSQL)"
+                ? "Default Database"
                 : `Uploaded Database (${activeConnection?.filename ?? "SQLite"})`}
             </span>
             <p className="text-[11px] text-neutral-500">
               {isDefaultDb
-                ? "Displaying cache hits and queries from query_cache"
+                ? "Displaying cache analytics for the configured database"
                 : `Displaying isolated cache data for connection ID: ${connectionId?.slice(0, 12)}…`}
             </p>
           </div>
         </div>
         <span
-          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-            isDefaultDb
+          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${isDefaultDb
               ? "bg-blue-50 text-blue-700 border border-blue-200"
               : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-          }`}
+            }`}
         >
           {isDefaultDb ? "Configured DB" : "Uploaded File"}
         </span>
@@ -160,7 +151,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
       {total > 0 && (
         <div>
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Hits vs Misses vs Invalidations
+            Hits vs Misses
           </p>
           <div className="flex h-2.5 overflow-hidden rounded-full bg-neutral-100">
             <div
@@ -171,15 +162,10 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
               className="bg-blue-500"
               style={{ width: `${(analytics.total_cache_misses / total) * 100}%` }}
             />
-            <div
-              className="bg-amber-500"
-              style={{ width: `${(analytics.total_invalidations / total) * 100}%` }}
-            />
           </div>
           <div className="mt-1.5 flex gap-4 text-[11px] text-neutral-500">
             <span>🟢 Hits: {analytics.total_cache_hits}</span>
             <span>🔵 Misses: {analytics.total_cache_misses}</span>
-            <span>🟠 Invalidations: {analytics.total_invalidations}</span>
           </div>
         </div>
       )}
@@ -195,7 +181,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Question</th>
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Hits</th>
                 <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Cost Saved</th>
-                <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Last Used</th>
+                <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Cached SQL</th>
               </tr>
             </thead>
             <tbody>
@@ -204,7 +190,7 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
                   <td className="max-w-xs truncate px-3 py-2 text-neutral-800">{q.question}</td>
                   <td className="px-3 py-2 text-neutral-800">{q.hit_count}</td>
                   <td className="px-3 py-2 text-neutral-800">${q.cost_saved.toFixed(6)}</td>
-                  <td className="px-3 py-2 text-neutral-500">{formatDate(q.last_used_at)}</td>
+                  <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-neutral-500" title={q.sql}>{q.sql}</td>
                 </tr>
               ))}
               {analytics.top_cached_queries.length === 0 && (
@@ -219,37 +205,6 @@ export function CacheAnalytics({ activeConnection, isDefault }: CacheAnalyticsPr
         </div>
       </div>
 
-      {invalidations && invalidations.invalidations.length > 0 && (
-        <div>
-          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            Recent Schema-Change Invalidations
-          </p>
-          <div className="overflow-x-auto rounded-md border border-neutral-200">
-            <table className="w-full border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-neutral-200 bg-neutral-50">
-                  <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Question</th>
-                  <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Reason</th>
-                  <th className="px-3 py-2 text-xs font-semibold text-neutral-600">Old → New Hash</th>
-                  <th className="px-3 py-2 text-xs font-semibold text-neutral-600">When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invalidations.invalidations.map((event, i) => (
-                  <tr key={i} className="border-b border-neutral-100 last:border-0">
-                    <td className="max-w-xs truncate px-3 py-2 text-neutral-800">{event.question}</td>
-                    <td className="px-3 py-2 text-neutral-500">{event.reason ?? "—"}</td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-neutral-500">
-                      {(event.old_schema_hash ?? "").slice(0, 8)} → {(event.new_schema_hash ?? "").slice(0, 8)}
-                    </td>
-                    <td className="px-3 py-2 text-neutral-500">{formatDate(event.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

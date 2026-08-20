@@ -18,6 +18,20 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+_SENTINEL = "INSUFFICIENT_DATA"
+
+
+def _check_sentinel(sql: str) -> None:
+    """Raise a user-friendly RuntimeError when the LLM signals it cannot
+    answer the question from the schema (returns our sentinel string)."""
+    if sql.strip().upper() == _SENTINEL:
+        raise RuntimeError(
+            "Your question doesn't seem to be about the available data. "
+            "Please ask something specific, e.g. 'Show all orders' or "
+            "'Total revenue by country'."
+        )
+
+
 def _generate_sql_using_gemini(question: str, schema_context: str, api_key: str) -> tuple[str, int]:
     prompt = f"""You are a SQL expert. Convert the following natural language question into a valid PostgreSQL query.
 
@@ -27,11 +41,13 @@ Database Schema:
 User Question: {question}
 
 IMPORTANT RULES:
-1. Return ONLY the SQL query, no markdown, no explanation
-2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.)
-3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed
-4. If the question is ambiguous, make reasonable assumptions
-5. Ensure the query is syntactically correct
+1. Return ONLY the SQL query, no markdown, no explanation.
+2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.).
+3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed.
+4. If the question is ambiguous, make reasonable assumptions.
+5. Ensure the query is syntactically correct.
+6. If the question is NOT related to the database schema (e.g. greetings, random words, off-topic requests),
+   respond with exactly the word: INSUFFICIENT_DATA — nothing else.
 
 SQL Query:"""
 
@@ -55,10 +71,7 @@ SQL Query:"""
 
     try:
         with urllib.request.urlopen(req) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            sql = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            tokens_used = res_data.get("usageMetadata", {}).get("totalTokenCount", 0)
-            return _strip_markdown_fences(sql), tokens_used
+            res_data_raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code == 429:
             raise RuntimeError("Gemini API quota exhausted. Please try again later.")
@@ -70,6 +83,17 @@ SQL Query:"""
             raise RuntimeError(f"Gemini API error {e.code}. Please try again.")
     except Exception:
         raise RuntimeError("Could not reach the Gemini API. Check your connection and API key.")
+
+    try:
+        res_data = json.loads(res_data_raw)
+        sql = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        tokens_used = res_data.get("usageMetadata", {}).get("totalTokenCount", 0)
+    except (KeyError, IndexError, json.JSONDecodeError):
+        raise RuntimeError("The model refused to answer or returned an unexpected response.")
+
+    sql = _strip_markdown_fences(sql)
+    _check_sentinel(sql)
+    return sql, tokens_used
 
 
 def generate_sql_from_question(question: str, schema_context: str) -> tuple[str, int]:
@@ -92,11 +116,13 @@ Database Schema:
 User Question: {question}
 
 IMPORTANT RULES:
-1. Return ONLY the SQL query, no markdown, no explanation
-2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.)
-3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed
-4. If the question is ambiguous, make reasonable assumptions
-5. Ensure the query is syntactically correct
+1. Return ONLY the SQL query, no markdown, no explanation.
+2. Generate the most appropriate SQL statement (SELECT, INSERT, UPDATE, DELETE, ALTER, etc.).
+3. Use appropriate JOINs, WHERE, GROUP BY, ORDER BY, LIMIT as needed.
+4. If the question is ambiguous, make reasonable assumptions.
+5. Ensure the query is syntactically correct.
+6. If the question is NOT related to the database schema (e.g. greetings, random words, off-topic requests),
+   respond with exactly the word: INSUFFICIENT_DATA — nothing else.
 
 SQL Query:"""
 
@@ -119,6 +145,8 @@ SQL Query:"""
 
         sql = message.content[0].text.strip()
         tokens_used = message.usage.input_tokens + message.usage.output_tokens
-        return _strip_markdown_fences(sql), tokens_used
+        sql = _strip_markdown_fences(sql)
+        _check_sentinel(sql)
+        return sql, tokens_used
     else:
         raise RuntimeError("No AI API key configured. Set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env.")
