@@ -12,6 +12,7 @@ import os
 import re
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
 import redis
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -19,16 +20,27 @@ from sqlalchemy.orm import Session
 from db_models import CacheAuditLog, DynamicQueryCache, QueryCache
 import schema_hasher
 
-# Initialize Redis client (configurable via environment variables)
+# Load environment variables from backend/.env
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=env_path, override=True)
+
+# Initialize Redis client (supports REDIS_URL or separate host/port/password + SSL for Upstash)
+REDIS_URL = os.getenv("REDIS_URL")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-redis_client = redis.Redis(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    password=REDIS_PASSWORD if REDIS_PASSWORD else None,
-    decode_responses=True,
-)
+REDIS_SSL = os.getenv("REDIS_SSL", "").lower() == "true" or "upstash.io" in REDIS_HOST.lower()
+
+if REDIS_URL:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+else:
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD if REDIS_PASSWORD else None,
+        ssl=REDIS_SSL,
+        decode_responses=True,
+    )
 
 # Time-to-Live for cache entries (7 days)
 CACHE_TTL_SECONDS = 60 * 60 * 24 * 7

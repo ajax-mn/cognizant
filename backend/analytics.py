@@ -1,5 +1,6 @@
 """Cache analytics endpoints: hit rate, cost saved, top cached queries, invalidations scoped to the active database context."""
 
+  
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
